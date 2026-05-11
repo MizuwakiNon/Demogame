@@ -11,6 +11,8 @@
 
     <script src="jspsych/dist/plugin-survey-html-form.js"></script>
 
+    <script src="https://unpkg.com/@jspsych-contrib/plugin-pipe"></script>
+
     <link rel="stylesheet" href="jspsych/dist/jspsych.css" />
 
     <style>
@@ -266,11 +268,41 @@
 
   <body>
     <script>
-      const participantID = Math.random().toString(36).substr(2, 9);
-      const exportFilename = `help_seeking_experiment_${participantID}.csv`;
+      const DATAPIPE_EXPERIMENT_ID = "LvETucku4I3O";
+
+      const jsPsych = initJsPsych({
+        on_finish: () => {
+          prepareDataForExport();
+        },
+      });
+
+      const subject_id = jsPsych.randomization.randomID(10);
+      const participantID = subject_id;
+      const exportFilename = `${subject_id}.csv`;
       const conditionCodeMap = { nocost: 1, normal: 2, burden: 3 };
-      const themeCodeMap = { "①": 1, "②": 2, "③": 3, "④": 4, "⑤": 5 };
+      const datapipeExportColumns = [
+        "ID",
+        "trial_type",
+        "trial_index",
+        "time_elapsed",
+        "rt",
+        "condition",
+        "cost",
+        "trialNum",
+        "isPractice",
+        "theme",
+        "variant",
+        "vignette",
+        "choice",
+        "choice_label",
+        "success",
+        "success_prev",
+        "self_cost",
+        "other_cost",
+        "screenType",
+      ];
       let exportPrepared = false;
+      let uploadResult = null;
 
       function prepareDataForExport() {
         if (exportPrepared) {
@@ -295,7 +327,7 @@
           row.cost = conditionCodeMap[row.condition] ?? "";
           row.choice_label = row.choice === 1 ? "求める" : "求めない";
           row.success_prev = previousDecision && previousDecision.choice === 1 ? previousDecision.success : "";
-          row.vignette = row.theme ? themeCodeMap[row.theme.charAt(0)] ?? "" : "";
+          row.vignette = row.theme ? Number(row.theme) || "" : "";
           previousDecision = row;
         });
 
@@ -304,23 +336,71 @@
 
       function saveExperimentData() {
         prepareDataForExport();
-        jsPsych.data.get().localSave("csv", exportFilename);
+        const blob = new Blob([getDataPipeCSV()], { type: "text/csv" });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        a.download = exportFilename;
+        a.click();
+        URL.revokeObjectURL(url);
       }
 
-      const jsPsych = initJsPsych({
-        on_finish: () => {
-          prepareDataForExport();
+      function getDataPipeCSV() {
+        prepareDataForExport();
+        const escapeCSV = (value) => {
+          const text = value === null || value === undefined ? "" : String(value);
+          return `"${text.replace(/"/g, '""')}"`;
+        };
+
+        const decisionRows = jsPsych.data.get().filter({ screenType: "decision" }).values();
+        const lines = [
+          datapipeExportColumns.map(escapeCSV).join(","),
+          ...decisionRows.map((row) => datapipeExportColumns.map((column) => escapeCSV(row[column])).join(",")),
+        ];
+
+        return `${lines.join("\n")}\n`;
+      }
+
+      const save_data = {
+        type: jsPsychPipe,
+        action: "save",
+        experiment_id: DATAPIPE_EXPERIMENT_ID,
+        filename: exportFilename,
+        data_string: getDataPipeCSV,
+        wait_message: "<p>実験データを保存しています。この画面を閉じずにお待ちください。</p>",
+        data: { screenType: "datapipe_upload" },
+        on_finish: function (data) {
+          const result = data.result || {};
+          const message = result.message || result.error || "";
+          const errorCode = message === "The data are not valid according to the validation parameters set for this experiment."
+            ? "INVALID_DATA"
+            : "";
+
+          uploadResult = data.success
+            ? {
+                ok: true,
+                errorCode: "",
+                message: "DataPipeを経由してOSFへCSVデータを保存しました。",
+              }
+            : {
+                ok: false,
+                errorCode,
+                message: `${message || "DataPipeへの保存に失敗しました。"} バックアップとしてCSVファイルをこの端末に保存しました。`,
+              };
+
+          if (!uploadResult.ok) {
+            saveExperimentData();
+          }
         },
-      });
+      };
 
       let timeline = [];
 
       function renderCard(title, body, eyebrow = "援助要請ゲーム") {
-        const titleElement = title ? `<h1 class="screen-title">${title}</h1>` : '';
         return `
           <section class="screen-card">
             <p class="screen-eyebrow">${eyebrow}</p>
-            ${titleElement}
+            <h1 class="screen-title">${title}</h1>
             <div class="screen-body">
               ${body}
             </div>
@@ -373,7 +453,7 @@
         {
           label: "2",
           patterns: {
-            A: "最近，十分に休んでも疲れが取れず，体が重く感じる日が続いています。勉強や課題に取りかかっても集中が続かず，思うように進みません。",
+            A: "最近，十分に休んでも疲れが取れず，体が重く感じる日が続いています。勉強や仕事に取りかかっても集中が続かず，思うように進みません。",
             B: "この1ヵ月ほど，常にだるさを感じています。作業をしていてもすぐに気が散ってしまい，何度も中断することが増えました。",
             C: "ここ最近，少し動いただけでも疲れてしまい，作業を始めるまでに時間がかかります。以前よりも効率が落ちていると感じています。"
           }
@@ -408,142 +488,6 @@
         return jsPsych.randomization.shuffle(array.slice());
       }
 
-      function renderSurveyCard(title, body, eyebrow = "アンケート") {
-        return renderCard("", body, eyebrow);
-      }
-
-      function renderRadioGroup(name, options) {
-        return options
-          .map((option) => `<label><input type="radio" name="${name}" value="${option.value}" required> ${option.label}</label>`)
-          .join("<br>");
-      }
-
-      function parseSurveyResponse(response) {
-        if (typeof response === "string") {
-          try {
-            return JSON.parse(response);
-          } catch (error) {
-            return {};
-          }
-        }
-        return response || {};
-      }
-
-      function surveyOnFinish(data, fieldNames) {
-        data.screenType = "survey";
-        const response = parseSurveyResponse(data.response || data.responses);
-        fieldNames.forEach((name) => {
-          if (response[name] !== undefined) {
-            data[name] = response[name];
-          }
-        });
-      }
-
-      function buildSurveyPage(title, instruction, items, options) {
-        const shuffledItems = shuffleArray(items);
-        const fieldNames = shuffledItems.map((item) => item.name);
-        let html = `<p>${instruction}</p>`;
-        shuffledItems.forEach((item) => {
-          html += `
-            <div class="screen-question">
-              <p>${item.prompt}</p>
-              ${renderRadioGroup(item.name, options)}
-            </div>
-          `;
-        });
-        return {
-          type: jsPsychSurveyHtmlForm,
-          html: renderSurveyCard(title, html),
-          button_label: "つぎへ",
-          on_finish: (data) => surveyOnFinish(data, fieldNames),
-        };
-      }
-
-      const likertOptions = [
-        { value: "1", label: "１全くあてはまらない" },
-        { value: "2", label: "２あてはまらない" },
-        { value: "3", label: "３どちらでもない" },
-        { value: "4", label: "４あてはまる" },
-        { value: "5", label: "５とてもあてはまる" },
-      ];
-
-      const depressionOptions = [
-        { value: "1", label: "１全くない" },
-        { value: "2", label: "２数日" },
-        { value: "3", label: "３半分以上" },
-        { value: "4", label: "４ほとんど毎日" },
-      ];
-
-      const faceSheetPage = {
-        type: jsPsychSurveyHtmlForm,
-        html: renderSurveyCard("フェイスシート", `
-          <p>以下の質問にお答えください。</p>
-          <div class="screen-question">
-            <p>あなたの性別(せいべつ)を教(おし)えて下さい</p>
-            <label><input type="radio" name="gender" value="男性" required> 男性</label><br>
-            <label><input type="radio" name="gender" value="女性" required> 女性</label><br>
-            <label><input type="radio" name="gender" value="どちらでもない" required> どちらでもない</label>
-          </div>
-          <div class="screen-question">
-            <p>あなたの年齢(ねんれい)を教(おし)えて下さい</p>
-            <input type="number" name="age" min="1" max="99" required style="width:6rem; padding:10px; border-radius:12px; border:1px solid rgba(70,87,102,.2);">
-          </div>
-          <div class="screen-question">
-            <p>あなたの出身地(しゅっしんち)を教(おし)えて下さい</p>
-            <input type="text" name="country" required style="width:100%; padding:10px; border-radius:12px; border:1px solid rgba(70,87,102,.2);">
-          </div>
-        `),
-        button_label: "つぎへ",
-        on_finish: (data) => surveyOnFinish(data, ["gender", "age", "country"]),
-      };
-
-      const narcissismItems = [
-        { prompt: "自分の欠点や失敗を少しでも悪く言われると、ひどく動揺する", name: "vulnerable_narcissism1" },
-        { prompt: "人といると、馬鹿にされたり軽く扱われはしないかと不安になる", name: "vulnerable_narcissism2" },
-        { prompt: "周りの人に自分が変な人に思われているのではないかと不安になる", name: "vulnerable_narcissism3" },
-        { prompt: "他人から間違いや欠点を指摘されると、憂鬱な気分が続く", name: "vulnerable_narcissism4" },
-        { prompt: "他人から間違いや欠点を指摘されると、自分の全ても否定されたように感じる", name: "vulnerable_narcissism5" },
-        { prompt: "他の人があの発言や行動に注目してくれないと、自分があの価値のない人間になったような気がする", name: "vulnerable_narcissism6" },
-        { prompt: "常時にすぐれた人や目上の人認めてもらえなければ、自信が持てない", name: "vulnerable_narcissism7" },
-        { prompt: "人に軽く扱われて、あとですごく腹が立つことがある", name: "vulnerable_narcissism8" },
-        { prompt: "私には持って生まれたすばらしい才能がある", name: "grandiose_narcissism1" },
-        { prompt: "私は他に並ぶ人がいないくらい、特別な存在である", name: "grandiose_narcissism2" },
-        { prompt: "私は、周りの人からもっと高く評価されてもよい人間だと思う", name: "grandiose_narcissism3" },
-        { prompt: "自分はきっと将来成功するのではないかと思う", name: "grandiose_narcissism4" },
-        { prompt: "自分にはどこか、他の人をひきつけるところがあるようだ", name: "grandiose_narcissism5" },
-        { prompt: "自分自身では、要領もいいし、うまく判断のできるような賢さも備えていると思う", name: "grandiose_narcissism6" },
-        { prompt: "自分の考えや感情の豊かさ、感受性にはかなり自信がある", name: "grandiose_narcissism7" },
-        { prompt: "自分の体を人に自慢したい", name: "grandiose_narcissism8" },
-        { prompt: "私は今まで他の人にはできないような経験をつんできた", name: "grandiose_narcissism9" },
-        { prompt: "私の意見通りにすれば、もっとものごとが上手く進むのに、と思う", name: "grandiose_narcissism10" },
-      ];
-
-      const helpseekingItems = [
-        { prompt: "困っていることを解決するために、他者からの助言や援助が欲しい", name: "helpseeking_preferemce1" },
-        { prompt: "自分が困っているときには、話を聞いてくれる人が欲しい", name: "helpseeking_preferemce2" },
-        { prompt: "困っていることを解決するために、自分と一緒に対処してくれる人があの欲しい", name: "helpseeking_preferemce3" },
-        { prompt: "自分は、よほどのことがない限り、人に相談することがない", name: "helpseeking_preferemce4R" },
-        { prompt: "何事も人に頼らず、自分ですべて解決したい", name: "helpseeking_preferemce5R" },
-        { prompt: "他人の援助や助言は、あまり役立たないと思っている", name: "helpseeking_preferemce6R" },
-        { prompt: "今後も、自分の周りの人々に助けられながら、上手くやっていきたい", name: "helpseeking_preferemce7" },
-        { prompt: "自分は、人に相談したり援助を求めるとき、いつも心苦しさを感じる", name: "helpseeking_preferemce8R" },
-        { prompt: "他人からの助言や援助を受けることに、抵抗がある", name: "helpseeking_preferemce9R" },
-        { prompt: "人は誰でも、相談や援助を求められたら、わずらわしく感じると思う", name: "helpseeking_preferemce10R" },
-        { prompt: "自分が困っているとき、周りの人には、そっとしておいて欲しい", name: "helpseeking_preferemce11R" },
-      ];
-
-      const depressionItems = [
-        { prompt: "物事に対してほとんど興味がない、または楽しめない", name: "depression1" },
-        { prompt: "気分が落ち込む、憂うつになる、または絶望的な気持ちになる", name: "depression2" },
-        { prompt: "寝付きが悪い、途中で目がさめる、または逆に眠り過ぎる", name: "depression3" },
-        { prompt: "疲れた感じがする、または気力がない", name: "depression4" },
-        { prompt: "あまり食欲がない、または食べ過ぎる", name: "depression5" },
-        { prompt: "自分はダメな人間だ、人生の敗北者だと気に病む、または 自分自身あるいは家族に申し訳がないと感じる", name: "depression6" },
-        { prompt: "新聞を読む、またはテレビを見ることなどに集中することが難しかったり", name: "depression7" },
-        { prompt: "他人が気づくぐらいに動きや話し方のが遅くなる、あるいは反対に、 そわそわしたり、落ちつかず、ふだんよりも動き回ることがある", name: "depression8" },
-        { prompt: "死んだ方がましだ、あるいは自分を何らかの方法で傷つけようと 思ったことがある", name: "depression9" },
-      ];
-
       const conditionOrder = shuffleArray(["nocost", "normal", "burden"]);
       const themePatternAssignments = {};
       vignettes.forEach((item) => {
@@ -577,7 +521,7 @@
           </div>
           <div class="info-block">
             <strong>参加による利益</strong>
-            <span>あなたが本実験・調査に参加することでパーソナリティや援助要請に関する研究の発展に繋がります。</span>
+            <span>あなたが本実験・調査に参加することで学習，認知，感情についての研究の発展に繋がります。</span>
           </div>
           <div class="info-block">
             <strong>匿名性の確保</strong>
@@ -597,8 +541,6 @@
         button_label: "つぎへ",
       });
 
-      timeline.push(faceSheetPage);
-
       /* =========================
          ゲーム説明
       ========================= */
@@ -609,7 +551,7 @@
           <div class="info-block">
             <strong>基本的なルール</strong>
             <ul class="rule-list">
-              <li>社会生活で起きうる状況に対して，「このような状況の時に誰かに助けを求めますか？」と尋ねます。</li>
+              <li>学生生活で起きうる状況に対して，「このような状況の時に誰かに助けを求めますか？」と尋ねます。</li>
               <li>あなたは，その問いに対して助けを「求める」か「求めないか」を選択してください。</li>
               <li>あなたの選んだ選択肢によって，助けを求めた相手とあなたの次の行動が決まります。</li>
             </ul>
@@ -827,44 +769,16 @@
 
       /* ================= タイムライン ================= */
 
-      /* ================= 終了画面 & CSV保存 ================= */
+      /* ================= 自動CSV保存 & 終了画面 ================= */
 
-      const surveyPages = [
-        buildSurveyPage(
-          "自己愛尺度",
-          "質問文をよんで1～5のなかから当てはまるものを選択してください。",
-          narcissismItems,
-          likertOptions
-        ),
-        buildSurveyPage(
-          "被援助志向性尺度",
-          "質問文をよんで1～5のなかから当てはまるものを選択してください。",
-          helpseekingItems,
-          likertOptions
-        ),
-        buildSurveyPage(
-          "抑うつ尺度",
-          "この２週間、次のような問題にどのくらい頻繁に悩まされていますか？",
-          depressionItems,
-          depressionOptions
-        ),
-      ];
+      timeline.push(save_data);
 
       timeline.push({
         type: jsPsychHtmlButtonResponse,
-        stimulus: renderNotice("ゲーム終了", "<p>これでゲームは終了です。次はアンケートに移ります。よろしければ「次へ」ボタンを押してください</p>", "案内"),
-        choices: ["次へ"],
-      });
-
-      timeline.push(...shuffleArray(surveyPages));
-
-      timeline.push({
-        type: jsPsychHtmlButtonResponse,
-        stimulus: renderNotice("実験終了", "<p>実験にご協力ありがとうございました。</p><p>終了ボタンを押すと，CSVファイルが自動的に保存されます。</p>", "終了画面"),
-        choices: ["終了する"],
-        on_finish: () => {
-          saveExperimentData();
+        stimulus: function () {
+          return renderNotice("", "<p>ご協力ありがとうございました。ブラウザを閉じて終了してください。</p>", "終了画面");
         },
+        choices: ["終了する"],
       });
 
       jsPsych.run(timeline);
